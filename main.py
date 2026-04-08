@@ -4,11 +4,8 @@ import os
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
 
-# ดึงค่าจาก Environment Variables (จะไปตั้งค่าใน Railway ทีหลัง)
-# แต่ถ้าจะรันในคอมเพื่อเอาไฟล์ session ให้ใส่ค่าตรงๆ ไว้ก่อนได้ครับ
-api_id = int(os.getenv('TG_API_ID', '31983626'))
-api_hash = os.getenv('TG_API_HASH', '38276889e1410851bb888d0f568e5f52')
-phone_number = os.getenv('TG_PHONE', '+66815900783')
+# --- CONFIGURATION ---
+acc_count = int(os.getenv('ACC_COUNT', '1'))
 MESSAGE_ID = int(os.getenv('TG_MSG_ID', '514'))
 
 # 🔥 รายชื่อกลุ่ม (82 กลุ่ม)
@@ -32,67 +29,90 @@ target_groups = [
     -1002339895208
 ]
 
-client = TelegramClient('session_fast_batch', api_id, api_hash)
+accounts = []
+clients = []
 
-async def send_one(group_id, text, media):
-    try:
-        await client.send_message(group_id, text, file=media)
-        print(f"✅ {group_id}")
-    except FloodWaitError as e:
-        print(f"⏳ Flood {e.seconds}s → {group_id}")
-        raise e
-    except Exception as e:
-        print(f"❌ {group_id}: {e}")
+for i in range(1, acc_count + 1):
+    acc_data = {
+        'session': os.getenv(f'TG_SESSION_{i}'),
+        'api_id': int(os.getenv(f'TG_API_ID_{i}', 0)),
+        'api_hash': os.getenv(f'TG_API_HASH_{i}'),
+    }
+    if acc_data['session'] and acc_data['api_id'] > 0:
+        accounts.append(acc_data)
 
-async def send_batch(batch, text, media):
-    tasks = [send_one(gid, text, media) for gid in batch]
-    await asyncio.gather(*tasks)
+async def init_all_clients():
+    for acc in accounts:
+        client = TelegramClient(acc['session'], acc['api_id'], acc['api_hash'])
+        await client.start()
+        clients.append(client)
+    print(f"✅ ระบบพร้อมทำงาน: {len(clients)} ไอดี")
+
+async def send_per_account_batch(client_index, text, media):
+    """ส่งทีละ 10 กลุ่มแล้วพักสั้นๆ จนครบกลุ่มตัวเอง"""
+    current_client = clients[client_index]
+    batch_size = 10
+    
+    print(f"📢 ID ที่ {client_index + 1} เริ่มส่งแบบ Batch...")
+    
+    # แบ่งกลุ่มเป็นชุดละ 10
+    for i in range(0, len(target_groups), batch_size):
+        batch = target_groups[i:i + batch_size]
+        
+        # ส่งใน Batch นั้นๆ (รัวได้ใน 10 กลุ่มนี้)
+        for gid in batch:
+            try:
+                await current_client.send_message(gid, text, file=media)
+                print(f"✅ ID {client_index + 1} -> {gid}")
+            except FloodWaitError as e:
+                print(f"⏳ ID {client_index + 1} ติด Flood รอ {e.seconds} วิ")
+                await asyncio.sleep(e.seconds)
+            except Exception as e:
+                print(f"❌ พลาดกลุ่ม {gid}: {e}")
+            
+            # ดีเลย์จิ๋วๆ 0.2 วิกันระบบค้าง
+            await asyncio.sleep(0.2)
+        
+        # 🔥 พัก 15-30 วินาที หลังจากส่งครบ 10 กลุ่ม
+        if i + batch_size < len(target_groups):
+            wait_batch = random.randint(15, 30)
+            print(f"☕ ส่งครบชุด 10 กลุ่มแล้ว พัก {wait_batch} วินาที...")
+            await asyncio.sleep(wait_batch)
 
 async def main():
-    await client.start(phone=phone_number)
-    print("🚀 FAST BATCH MODE 24/7 STARTED\n")
-
+    await init_all_clients()
+    
     while True:
-        try:
-            msg = await client.get_messages('me', ids=MESSAGE_ID)
-            if not msg:
-                print(f"❌ ไม่เจอข้อความ ID {MESSAGE_ID}")
-            else:
+        for i in range(len(clients)):
+            try:
+                # ดึงต้นฉบับ
+                msg = await clients[0].get_messages('me', ids=MESSAGE_ID)
+                if not msg:
+                    print("❌ ไม่พบข้อความต้นฉบับ")
+                    break
+                
                 text = msg.text or ""
                 media = msg.media
-                
-                batch_size = 10
-                for i in range(0, len(target_groups), batch_size):
-                    batch = target_groups[i:i+batch_size]
-                    try:
-                        await send_batch(batch, text, media)
-                    except FloodWaitError as e:
-                        print(f"🛑 ติด Flood รอ {e.seconds} วิ")
-                        await asyncio.sleep(e.seconds)
-                        break
-                    await asyncio.sleep(random.uniform(1, 3))
-                
-                print("🏁 จบรอบ ส่งครบแล้ว")
 
-        except Exception as e:
-            print(f"⚠️ Error: {e}")
-            await asyncio.sleep(60)
+                # ส่งทีละ Batch จนครบ 82 กลุ่ม
+                await send_per_account_batch(i, text, media)
+                print(f"🏁 ID {i + 1} ทำหน้าที่เสร็จสิ้น")
 
-        # 🔥 สุ่มพัก 15-30 นาที
-        wait = random.randint(900, 1800)
-        print(f"😴 พัก {wait//60} นาที...")
-        await asyncio.sleep(wait)
+                # 😴 รอ 10 นาที เพื่อให้ ID ถัดไปเริ่ม
+                if i < len(clients) - 1:
+                    print(f"🕒 พักเครื่อง 10 นาที ก่อน ID {i + 2} จะลุยต่อ...")
+                    await asyncio.sleep(600)
+
+            except Exception as e:
+                print(f"⚠️ ระบบขัดข้อง: {e}")
+                await asyncio.sleep(60)
+
+        print("🔄 จบรอบใหญ่ (ทุก ID ส่งครบ) เริ่มต้นรอบใหม่ทันที...")
 
 if __name__ == '__main__':
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
-        print("ปิดโปรแกรมเรียบร้อย")
-    except RuntimeError as e:
-        # กรณีรันบนบาง Environment ที่ asyncio.run มีปัญหา
-        if "no running event loop" in str(e) or "current event loop" in str(e):
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(main())
-        else:
-            raise e
+    except Exception:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(main())
