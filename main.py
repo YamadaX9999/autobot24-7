@@ -4,7 +4,7 @@ import os
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
 
-# --- CONFIGURATION ---
+# --- 1. การดึงค่า Variables ---
 acc_count = int(os.getenv('ACC_COUNT', '1'))
 MESSAGE_ID = int(os.getenv('TG_MSG_ID', '514'))
 
@@ -42,6 +42,7 @@ for i in range(1, acc_count + 1):
         accounts.append(acc_data)
 
 async def init_all_clients():
+    """เชื่อมต่อไอดีทั้งหมดครั้งแรก"""
     for acc in accounts:
         client = TelegramClient(acc['session'], acc['api_id'], acc['api_hash'])
         await client.start()
@@ -49,17 +50,19 @@ async def init_all_clients():
     print(f"✅ ระบบพร้อมทำงาน: {len(clients)} ไอดี")
 
 async def send_per_account_batch(client_index, text, media):
-    """ส่งทีละ 10 กลุ่มแล้วพักสั้นๆ จนครบกลุ่มตัวเอง"""
+    """ส่งทีละ 10 กลุ่ม พร้อมตรวจสอบ Connection ตลอดเวลา"""
     current_client = clients[client_index]
     batch_size = 10
     
-    print(f"📢 ID ที่ {client_index + 1} เริ่มส่งแบบ Batch...")
+    print(f"📢 ID ที่ {client_index + 1} เริ่มปฏิบัติการ...")
     
-    # แบ่งกลุ่มเป็นชุดละ 10
     for i in range(0, len(target_groups), batch_size):
+        # 🛡️ ตรวจสอบว่ายังเชื่อมต่ออยู่ไหมก่อนเริ่ม Batch ใหม่
+        if not current_client.is_connected():
+            print(f"🔄 ID {client_index + 1} หลุดระหว่าง Batch! กำลังต่อใหม่...")
+            await current_client.connect()
+
         batch = target_groups[i:i + batch_size]
-        
-        # ส่งใน Batch นั้นๆ (รัวได้ใน 10 กลุ่มนี้)
         for gid in batch:
             try:
                 await current_client.send_message(gid, text, file=media)
@@ -68,15 +71,16 @@ async def send_per_account_batch(client_index, text, media):
                 print(f"⏳ ID {client_index + 1} ติด Flood รอ {e.seconds} วิ")
                 await asyncio.sleep(e.seconds)
             except Exception as e:
+                if "disconnected" in str(e).lower():
+                    await current_client.connect()
                 print(f"❌ พลาดกลุ่ม {gid}: {e}")
             
-            # ดีเลย์จิ๋วๆ 0.2 วิกันระบบค้าง
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(1) # ดีเลย์ 1 วิระหว่างกลุ่ม กันระบบดีด
         
-        # 🔥 พัก 15-30 วินาที หลังจากส่งครบ 10 กลุ่ม
+        # พักสั้นๆ ระหว่าง Batch
         if i + batch_size < len(target_groups):
             wait_batch = random.randint(15, 30)
-            print(f"☕ ส่งครบชุด 10 กลุ่มแล้ว พัก {wait_batch} วินาที...")
+            print(f"☕ จบชุด 10 กลุ่ม พัก {wait_batch} วินาที...")
             await asyncio.sleep(wait_batch)
 
 async def main():
@@ -85,29 +89,38 @@ async def main():
     while True:
         for i in range(len(clients)):
             try:
-                # ดึงต้นฉบับ
+                # 🛡️ บังคับตรวจสอบ Connection ก่อนเริ่ม ID ใหม่ทุกครั้ง
+                if not clients[i].is_connected():
+                    print(f"🔄 ID {i+1} Offline! กำลังเชื่อมต่อใหม่เพื่อเริ่มงาน...")
+                    await clients[i].connect()
+
+                # เช็คไอดีหัวหน้าเพื่อดึงข้อความ
+                if not clients[0].is_connected():
+                    await clients[0].connect()
+
                 msg = await clients[0].get_messages('me', ids=MESSAGE_ID)
                 if not msg:
-                    print("❌ ไม่พบข้อความต้นฉบับ")
+                    print(f"❌ ไม่พบข้อความ ID {MESSAGE_ID}")
                     break
                 
                 text = msg.text or ""
                 media = msg.media
 
-                # ส่งทีละ Batch จนครบ 82 กลุ่ม
+                # เริ่มส่ง
                 await send_per_account_batch(i, text, media)
-                print(f"🏁 ID {i + 1} ทำหน้าที่เสร็จสิ้น")
+                print(f"🏁 ID {i + 1} ทำงานเสร็จสิ้น")
 
-                # 😴 รอ 10 นาที เพื่อให้ ID ถัดไปเริ่ม
+                # 🕒 พักระหว่างสลับ ID (ตั้งค่าได้ที่นี่)
                 if i < len(clients) - 1:
-                    print(f"🕒 พักเครื่อง 10 นาที ก่อน ID {i + 2} จะลุยต่อ...")
-                    await asyncio.sleep(200)
+                    wait_time = 100 # คุณเปลี่ยนเป็น 100 แล้ว
+                    print(f"🕒 พักเครื่อง {wait_time} วินาที ก่อนส่งไม้ต่อให้ ID {i + 2}...")
+                    await asyncio.sleep(wait_time)
 
             except Exception as e:
-                print(f"⚠️ ระบบขัดข้อง: {e}")
+                print(f"⚠️ ระบบขัดข้องในลูปหลัก: {e}")
                 await asyncio.sleep(60)
 
-        print("🔄 จบรอบใหญ่ (ทุก ID ส่งครบ) เริ่มต้นรอบใหม่ทันที...")
+        print("🔄 ครบรอบทุก ID แล้ว กำลังวนกลับไปเริ่มที่ ID 1 ใหม่...")
 
 if __name__ == '__main__':
     try:
