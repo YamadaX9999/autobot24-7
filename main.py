@@ -3,14 +3,12 @@ import random
 import os
 from telethon import TelegramClient
 from telethon.sessions import StringSession
-from telethon.errors import FloodWaitError, AuthKeyDuplicatedError
+from telethon.errors import FloodWaitError, AuthKeyDuplicatedError, PeerFloodError
 
-# --- 1. CONFIGURATION & VARIABLES ---
-# ตั้งค่าผ่าน Environment Variables ใน Railway
+# --- 1. CONFIGURATION ---
 acc_count = int(os.getenv('ACC_COUNT', '1'))
 MESSAGE_ID = int(os.getenv('TG_MSG_ID', '14'))
 
-# 🔥 รายชื่อกลุ่มทั้งหมด 82 กลุ่มของคุณ
 target_groups = [
     -1002478474638, -1002517149993, -1001903626496, -1002250390373, -1001919304083,
     -1001664000137, -1001789640114, -1001897247628, -1001618732646, -1002628615859,
@@ -31,95 +29,78 @@ target_groups = [
     -1002339895208
 ]
 
-accounts = []
-clients = []
+# --- 2. WORKER FUNCTION ---
 
-# ดึงข้อมูลบัญชีจาก Env
-for i in range(1, acc_count + 1):
-    session_str = os.getenv(f'TG_SESSION_{i}')
-    api_id = int(os.getenv(f'TG_API_ID_{i}', 0))
-    api_hash = os.getenv(f'TG_API_HASH_{i}')
+async def work_session(acc_data, acc_index):
+    """ฟังก์ชันการทำงานของ 1 บัญชีจนจบลิสต์"""
+    client = TelegramClient(StringSession(acc_data['session']), acc_data['api_id'], acc_data['api_hash'])
     
-    if session_str and api_id > 0:
-        accounts.append({'session': session_str, 'api_id': api_id, 'api_hash': api_hash})
+    try:
+        await client.start()
+        print(f"\n🟢 [ID {acc_index+1}] เริ่มเข้าเวรทำงาน...")
 
-# --- 2. CORE FUNCTIONS ---
+        # ดึงข้อความต้นฉบับจาก Saved Messages ของตัวเอง
+        msg = await client.get_messages('me', ids=MESSAGE_ID)
+        if not msg:
+            print(f"❌ [ID {acc_index+1}] ไม่พบข้อความต้นฉบับ ID {MESSAGE_ID}")
+            return
 
-async def init_all_clients():
-    """เชื่อมต่อทุกบัญชีด้วยระบบ String Session"""
-    for acc in accounts:
-        try:
-            client = TelegramClient(StringSession(acc['session']), acc['api_id'], acc['api_hash'])
-            await client.start()
-            clients.append(client)
-            print(f"✅ เชื่อมต่อบัญชีสำเร็จ")
-        except Exception as e:
-            print(f"❌ บัญชีมีปัญหา: {e}")
+        text = msg.text or ""
+        media = msg.media
 
-async def attack_one_group(group_id, text, media):
-    """รุมยิงข้อความจากทุกไอดีเข้ากลุ่มเดียว"""
-    tasks = []
-    for client in clients:
-        tasks.append(client.send_message(group_id, text, file=media))
-    
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    for i, res in enumerate(results):
-        if isinstance(res, Exception):
-            print(f"   ❌ ไอดี {i+1} พลาด: {res}")
-        else:
-            print(f"   🚀 ไอดี {i+1} ยิงเข้า {group_id} สำเร็จ")
+        # แบ่งกลุ่มเป็นชุดละ 10
+        chunks = [target_groups[i:i + 10] for i in range(0, len(target_groups), 10)]
+
+        for idx, chunk in enumerate(chunks):
+            print(f"🔥 [ID {acc_index+1}] กำลังยิงชุดที่ {idx+1} ({len(chunk)} กลุ่ม)")
+            
+            # ยิง 10 กลุ่มนี้พร้อมกัน (Burst ในตัวมันเอง)
+            tasks = [client.send_message(gid, text, file=media) for gid in chunk]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # เช็คผลลัพธ์คร่าวๆ
+            for r in results:
+                if isinstance(r, (FloodWaitError, PeerFloodError)):
+                    print(f"⚠️ [ID {acc_index+1}] ตรวจพบข้อจำกัด: {r}")
+
+            # พักระหว่างชุด 10 กลุ่ม (20-50 วินาที)
+            if idx < len(chunks) - 1:
+                pause = random.randint(20, 50)
+                print(f"⏳ [ID {acc_index+1}] พักหายใจ {pause} วินาที...")
+                await asyncio.sleep(pause)
+
+        print(f"✅ [ID {acc_index+1}] ส่งครบ 82 กลุ่มแล้ว!")
+
+    except Exception as e:
+        print(f"❗ [ID {acc_index+1}] เกิดข้อผิดพลาด: {e}")
+    finally:
+        await client.disconnect()
 
 async def main():
-    if not clients:
-        await init_all_clients()
-    
-    if not clients:
-        print("❌ ไม่มีบัญชีที่พร้อมทำงาน โปรดตรวจสอบ Environment Variables")
+    # โหลดบัญชีทั้งหมดเก็บไว้
+    all_accounts = []
+    for i in range(1, acc_count + 1):
+        s = os.getenv(f'TG_SESSION_{i}')
+        if s:
+            all_accounts.append({
+                'session': s,
+                'api_id': int(os.getenv(f'TG_API_ID_{i}')),
+                'api_hash': os.getenv(f'TG_API_HASH_{i}')
+            })
+
+    if not all_accounts:
+        print("❌ ไม่พบข้อมูลบัญชีใน Environment Variables")
         return
 
     while True:
-        try:
-            # ดึงข้อความต้นฉบับจาก Saved Messages ของบัญชีแรก
-            msg = await clients[0].get_messages('me', ids=MESSAGE_ID)
+        for idx, acc in enumerate(all_accounts):
+            # 1. รันบัญชีปัจจุบันให้เสร็จทั้งลิสต์
+            await work_session(acc, idx)
             
-            if not msg:
-                print(f"❌ ไม่พบข้อความ ID {MESSAGE_ID} ใน Saved Messages")
-            else:
-                text = msg.text or ""
-                media = msg.media
-                
-                # เริ่มวนลูปยิง 82 กลุ่ม
-                count = 0
-                for gid in target_groups:
-                    count += 1
-                    print(f"🎯 [{count}/82] กำลังยิงกลุ่ม: {gid}")
-                    await attack_one_group(gid, text, media)
+            # 2. เมื่อบัญชีนี้ทำเสร็จ พัก 10 นาที (600 วินาที) ก่อนส่งต่อให้บัญชีถัดไป
+            wait_next = 600
+            print(f"😴 [ID {idx+1}] พักเวร 10 นาที... เตรียมส่งต่อให้บัญชีถัดไป\n")
+            await asyncio.sleep(wait_next)
 
-                    # 🔥 Logic: ส่งครบ 10 กลุ่ม พัก 10-30 วินาที
-                    if count % 10 == 0:
-                        pause = random.randint(10, 30)
-                        print(f"⏳ ส่งครบ {count} กลุ่มแล้ว พักสุ่ม {pause} วินาที...")
-                        await asyncio.sleep(pause)
-                    else:
-                        # Delay ปกติระหว่างกลุ่ม 5-10 วินาที
-                        await asyncio.sleep(random.uniform(5, 10))
-                
-                print("🏁 จบรอบระดมยิง 82 กลุ่ม")
-
-        except Exception as e:
-            print(f"⚠️ ข้อผิดพลาดลูปหลัก: {e}")
-            await asyncio.sleep(60)
-
-        # พักรอบใหญ่ก่อนเริ่มใหม่ (สุ่ม 15-30 นาที)
-        wait_time = random.randint(900, 1800)
-        print(f"😴 พักรบ {wait_time // 60} นาที... แล้วจะเริ่มใหม่เอง\n")
-        await asyncio.sleep(wait_time)
-
-# --- 3. EXECUTION ---
 if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except Exception:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(main())
+    asyncio.run(main())
