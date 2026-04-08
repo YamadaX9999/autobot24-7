@@ -8,7 +8,7 @@ from telethon.errors import FloodWaitError, AuthKeyDuplicatedError
 # --- 1. CONFIGURATION & VARIABLES ---
 # ตั้งค่าผ่าน Environment Variables ใน Railway
 acc_count = int(os.getenv('ACC_COUNT', '1'))
-MESSAGE_ID = int(os.getenv('TG_MSG_ID', '514'))
+MESSAGE_ID = int(os.getenv('TG_MSG_ID', '14'))
 
 # 🔥 รายชื่อกลุ่มทั้งหมด 82 กลุ่มของคุณ
 target_groups = [
