@@ -32,36 +32,43 @@ target_groups = [
 # --- 2. WORKER FUNCTION ---
 
 async def work_session(acc_data, acc_index):
-    """ฟังก์ชันการทำงานของ 1 บัญชีจนจบลิสต์"""
+    """ฟังก์ชันการทำงานรายบัญชี พร้อมระบบรายงานผล Progress"""
     client = TelegramClient(StringSession(acc_data['session']), acc_data['api_id'], acc_data['api_hash'])
+    total_groups = len(target_groups)
+    sent_count = 0
     
     try:
         await client.start()
-        print(f"\n🟢 [ID {acc_index+1}] เริ่มเข้าเวรทำงาน...")
+        print(f"\n🟢 [ID {acc_index+1}] เริ่มเข้าเวรทำงาน (เป้าหมาย {total_groups} กลุ่ม)")
 
-        # ดึงข้อความต้นฉบับจาก Saved Messages ของตัวเอง
+        # ดึงข้อความต้นฉบับ
         msg = await client.get_messages('me', ids=MESSAGE_ID)
         if not msg:
-            print(f"❌ [ID {acc_index+1}] ไม่พบข้อความต้นฉบับ ID {MESSAGE_ID}")
+            print(f"❌ [ID {acc_index+1}] ไม่พบข้อความต้นฉบับ ID {MESSAGE_ID} ใน Saved Messages")
             return
 
         text = msg.text or ""
         media = msg.media
 
         # แบ่งกลุ่มเป็นชุดละ 10
-        chunks = [target_groups[i:i + 10] for i in range(0, len(target_groups), 10)]
+        chunks = [target_groups[i:i + 10] for i in range(0, total_groups, 10)]
 
         for idx, chunk in enumerate(chunks):
-            print(f"🔥 [ID {acc_index+1}] กำลังยิงชุดที่ {idx+1} ({len(chunk)} กลุ่ม)")
+            current_batch_size = len(chunk)
+            print(f"🔥 [ID {acc_index+1}] กำลังยิงชุดที่ {idx+1} จำนวน {current_batch_size} กลุ่ม...")
             
-            # ยิง 10 กลุ่มนี้พร้อมกัน (Burst ในตัวมันเอง)
+            # ส่งพร้อมกันในชุด 10 กลุ่ม
             tasks = [client.send_message(gid, text, file=media) for gid in chunk]
             results = await asyncio.gather(*tasks, return_exceptions=True)
             
-            # เช็คผลลัพธ์คร่าวๆ
+            # อัปเดตตัวเลข Progress
+            sent_count += current_batch_size
+            print(f"📊 รายงานผล: [{sent_count}/{total_groups}] กลุ่มถูกดำเนินการแล้ว")
+
+            # ตรวจสอบ Error ในชุดนี้
             for r in results:
                 if isinstance(r, (FloodWaitError, PeerFloodError)):
-                    print(f"⚠️ [ID {acc_index+1}] ตรวจพบข้อจำกัด: {r}")
+                    print(f"⚠️ [ID {acc_index+1}] ตรวจพบข้อจำกัดจาก Telegram: {r}")
 
             # พักระหว่างชุด 10 กลุ่ม (20-50 วินาที)
             if idx < len(chunks) - 1:
@@ -69,15 +76,15 @@ async def work_session(acc_data, acc_index):
                 print(f"⏳ [ID {acc_index+1}] พักหายใจ {pause} วินาที...")
                 await asyncio.sleep(pause)
 
-        print(f"✅ [ID {acc_index+1}] ส่งครบ 82 กลุ่มแล้ว!")
+        print(f"✅ [ID {acc_index+1}] ทำงานเสร็จสิ้นครบ {total_groups} กลุ่ม!")
 
     except Exception as e:
-        print(f"❗ [ID {acc_index+1}] เกิดข้อผิดพลาด: {e}")
+        print(f"❗ [ID {acc_index+1}] เกิดข้อผิดพลาดร้ายแรง: {e}")
     finally:
         await client.disconnect()
 
 async def main():
-    # โหลดบัญชีทั้งหมดเก็บไว้
+    # โหลดบัญชีทั้งหมด
     all_accounts = []
     for i in range(1, acc_count + 1):
         s = os.getenv(f'TG_SESSION_{i}')
@@ -89,17 +96,25 @@ async def main():
             })
 
     if not all_accounts:
-        print("❌ ไม่พบข้อมูลบัญชีใน Environment Variables")
+        print("❌ ไม่พบข้อมูลบัญชี กรุณาตรวจสอบ Environment Variables")
         return
 
     while True:
         for idx, acc in enumerate(all_accounts):
-            # 1. รันบัญชีปัจจุบันให้เสร็จทั้งลิสต์
+            # 1. รันบัญชีปัจจุบันให้จบลิสต์
             await work_session(acc, idx)
             
-            # 2. เมื่อบัญชีนี้ทำเสร็จ พัก 10 นาที (600 วินาที) ก่อนส่งต่อให้บัญชีถัดไป
-            wait_next = 600
-            print(f"😴 [ID {idx+1}] พักเวร 10 นาที... เตรียมส่งต่อให้บัญชีถัดไป\n")
+            # 2. คำนวณเวลาพัก (Logic: บัญชีเดียวสุ่ม 15-25 นาที / หลายบัญชีพัก 10 นาที)
+            if len(all_accounts) == 1:
+                wait_next = random.randint(600, 1200)
+                minutes = wait_next // 60
+                seconds = wait_next % 60
+                print(f"😴 [ID 1] มีบัญชีเดียว... เข้าโหมดถนอมบัญชี สุ่มพัก {minutes} นาที {seconds} วินาที ก่อนเริ่มรอบใหม่")
+            else:
+                wait_next = 600
+                print(f"😴 [ID {idx+1}] ส่งไม้ต่อสำเร็จ พักเวร 10 นาที...")
+            
+            print("-" * 30)
             await asyncio.sleep(wait_next)
 
 if __name__ == '__main__':
