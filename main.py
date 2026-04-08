@@ -101,7 +101,7 @@ async def main():
                 # 😴 รอ 10 นาที เพื่อให้ ID ถัดไปเริ่ม
                 if i < len(clients) - 1:
                     print(f"🕒 พักเครื่อง 10 นาที ก่อน ID {i + 2} จะลุยต่อ...")
-                    await asyncio.sleep(600)
+                    await asyncio.sleep(200)
 
             except Exception as e:
                 print(f"⚠️ ระบบขัดข้อง: {e}")
