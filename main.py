@@ -12,7 +12,7 @@ acc_count = int(os.getenv('ACC_COUNT', '1'))
 
 # โหลดรายชื่อกลุ่มเป้าหมายจากไฟล์ JSON
 try:
-    with open('/home/ubuntu/projects/autobot-24-7-9c7c9ed9/target_groups.json', 'r') as f:
+    with open('target_groups.json', 'r') as f:
         target_groups = json.load(f)
 except FileNotFoundError:
     print("❌ ไม่พบไฟล์ target_groups.json กรุณาสร้างไฟล์นี้และใส่ Group IDs")
