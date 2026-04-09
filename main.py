@@ -1,148 +1,177 @@
-import asyncio
-import random
 import os
 import json
-from telethon import TelegramClient
+import asyncio
+import random
+import time
+from telethon.sync import TelegramClient
 from telethon.sessions import StringSession
+from telethon.tl.functions.messages import GetHistoryRequest
+from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
 from telethon.errors import FloodWaitError, AuthKeyDuplicatedError, PeerFloodError
 
-# --- 1. CONFIGURATION ---
-# ดึงจำนวนบัญชีจาก Environment Variable (ถ้าไม่มีให้เป็น 1)
-acc_count = int(os.getenv('ACC_COUNT', '1'))
+# --- Configuration --- #
+# ค้นหาตำแหน่งโฟลเดอร์ที่ไฟล์ main.py วางอยู่
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TARGET_GROUPS_PATH = os.path.join(BASE_DIR, 'target_groups.json')
 
-# โหลดรายชื่อกลุ่มเป้าหมายจากไฟล์ JSON
-try:
-    with open('target_groups.json', 'r') as f:
-        target_groups = json.load(f)
-except FileNotFoundError:
-    print("❌ ไม่พบไฟล์ target_groups.json กรุณาสร้างไฟล์นี้และใส่ Group IDs")
-    target_groups = []
-except json.JSONDecodeError:
-    print("❌ ไฟล์ target_groups.json มีรูปแบบไม่ถูกต้อง")
-    target_groups = []
+# --- Environment Variables Check --- #
+def get_env_variable(var_name, is_required=True):
+    value = os.getenv(var_name)
+    if is_required and not value:
+        print(f"❌ Error: Environment variable '{var_name}' is not set.")
+        exit(1)
+    return value
 
-# --- 2. WORKER FUNCTION ---
+ACC_COUNT = int(get_env_variable('ACC_COUNT', is_required=True))
 
-async def work_session(acc_data, acc_index):
-    """ฟังก์ชันจัดการงานของ 1 บัญชี"""
-    client = TelegramClient(StringSession(acc_data['session']), acc_data['api_id'], acc_data['api_hash'])
-    total_groups = len(target_groups)
-    sent_count = 0
-    
+# --- Load Target Groups --- #
+def load_target_groups():
     try:
-        await client.start()
-        print(f"\n🚀 [ID {acc_index+1}] กำลังออนไลน์เพื่อเริ่มงาน...")
-
-        # ดึงข้อความต้นฉบับจาก Saved Messages ของตัวเองตามเลข ID ที่กำหนด
-        msg = await client.get_messages('me', ids=acc_data['msg_id'])
-        if not msg:
-            print(f"❌ [ID {acc_index+1}] ไม่พบข้อความ ID {acc_data['msg_id']} ในหน้า Saved Messages")
-            return
-
-        text = msg.text or ""
-        media = msg.media
-
-        # แบ่งกลุ่มเป็นก้อน ก้อนละ 10 กลุ่ม
-        chunks = [target_groups[i:i + 10] for i in range(0, total_groups, 10)]
-
-        for idx, chunk in enumerate(chunks):
-            current_batch_size = len(chunk)
-            print(f"📦 [ID {acc_index+1}] กำลังยิงชุดที่ {idx+1}/{len(chunks)} ({current_batch_size} กลุ่ม)...")
+        if not os.path.exists(TARGET_GROUPS_PATH):
+            print(f"❌ ไม่พบไฟล์: {TARGET_GROUPS_PATH} กรุณาสร้างไฟล์นี้และใส่ Group IDs")
+            return []
             
-            # ส่งข้อความทีละกลุ่มใน Batch พร้อม Jitter เพื่อความเนียน (Anti-Spam)
-            for gid in chunk:
+        with open(TARGET_GROUPS_PATH, 'r', encoding='utf-8') as f:
+            groups = json.load(f)
+            if not groups:
+                print("❌ ไม่พบกลุ่มเป้าหมายใน target_groups.json ไม่สามารถดำเนินการต่อได้")
+                return []
+            # ตรวจสอบว่าทุก group ID เป็น int
+            return [int(g) for g in groups]
+    except json.JSONDecodeError as e:
+        print(f"❌ Error: รูปแบบไฟล์ target_groups.json ไม่ถูกต้อง: {e}")
+        return []
+    except ValueError as e:
+        print(f"❌ Error: Group ID ใน target_groups.json ต้องเป็นตัวเลขเท่านั้น: {e}")
+        return []
+    except Exception as e:
+        print(f"❌ เกิดข้อผิดพลาดในการโหลดไฟล์ target_groups.json: {e}")
+        return []
+
+target_groups = load_target_groups()
+if not target_groups:
+    exit(1)
+
+# --- Main Logic --- #
+async def main():
+    print("✨ Autobot 24/7 กำลังออนไลน์เพื่อเริ่มงาน...")
+
+    clients = []
+    for i in range(1, ACC_COUNT + 1):
+        session_str = get_env_variable(f'TG_SESSION_{i}')
+        api_id = int(get_env_variable(f'TG_API_ID_{i}'))
+        api_hash = get_env_variable(f'TG_API_HASH_{i}')
+        msg_id = int(get_env_variable(f'TG_MSG_ID_{i}'))
+
+        try:
+            client = TelegramClient(StringSession(session_str), api_id, api_hash)
+            await client.connect()
+            if not await client.is_user_authorized():
+                print(f"⚠️ บัญชีที่ {i} (API ID: {api_id}) ไม่ได้เข้าสู่ระบบ หรือ Session หมดอายุ")
+                # ในกรณีที่ session หมดอายุ ควรให้ผู้ใช้สร้าง session ใหม่
+                # หรืออาจจะเพิ่ม logic ให้ client.start() เพื่อเข้าสู่ระบบใหม่
+                # แต่สำหรับการรันบน Railway แนะนำให้สร้าง StringSession ใหม่
+                await client.disconnect()
+                continue
+            clients.append({'client': client, 'msg_id': msg_id, 'api_id': api_id})
+            print(f"✅ บัญชีที่ {i} (API ID: {api_id}) ออนไลน์แล้ว")
+        except Exception as e:
+            print(f"❌ เกิดข้อผิดพลาดในการเชื่อมต่อบัญชีที่ {i} (API ID: {api_id}): {e}")
+            if client and client.is_connected():
+                await client.disconnect()
+            continue
+
+    if not clients:
+        print("❌ ไม่มีบัญชีใดออนไลน์ ไม่สามารถดำเนินการต่อได้")
+        return
+
+    print(f"🚀 เริ่มต้นการยิงข้อความไปยัง {len(target_groups)} กลุ่มเป้าหมายด้วย {len(clients)} บัญชี")
+
+    # แบ่งกลุ่มเป้าหมายให้แต่ละบัญชี
+    groups_per_client = [[] for _ in range(len(clients))]
+    for i, group_id in enumerate(target_groups):
+        groups_per_client[i % len(clients)].append(group_id)
+
+    # เริ่มต้นการยิงข้อความ
+    for client_idx, client_data in enumerate(clients):
+        client = client_data['client']
+        msg_id = client_data['msg_id']
+        api_id = client_data['api_id']
+        my_groups = groups_per_client[client_idx]
+
+        if not my_groups:
+            print(f"ℹ️ บัญชีที่ {client_idx+1} (API ID: {api_id}) ไม่มีกลุ่มเป้าหมายที่จะส่ง")
+            continue
+
+        print(f"➡️ บัญชีที่ {client_idx+1} (API ID: {api_id}) กำลังจะส่งไปยัง {len(my_groups)} กลุ่ม")
+
+        try:
+            # ดึงข้อความจาก Saved Messages
+            entity = await client.get_entity('me') # 'me' คือ Saved Messages
+            history = await client(GetHistoryRequest(peer=entity, limit=1, offset_id=msg_id))
+            message_to_send = None
+
+            if history.messages:
+                # ค้นหาข้อความที่ตรงกับ msg_id
+                for msg in history.messages:
+                    if msg.id == msg_id:
+                        message_to_send = msg
+                        break
+            
+            if not message_to_send:
+                print(f"❌ บัญชีที่ {client_idx+1} (API ID: {api_id}): ไม่พบข้อความ ID {msg_id} ใน Saved Messages")
+                await client.disconnect()
+                continue
+
+            # เตรียม Media (ถ้ามี)
+            media_to_send = None
+            if message_to_send.media:
+                if isinstance(message_to_send.media, MessageMediaPhoto):
+                    media_to_send = message_to_send.media.photo
+                elif isinstance(message_to_send.media, MessageMediaDocument):
+                    media_to_send = message_to_send.media.document
+                # สามารถเพิ่มประเภท Media อื่นๆ ได้ตามต้องการ
+
+            # ส่งข้อความไปยังแต่ละกลุ่ม
+            for i, group_id in enumerate(my_groups):
                 try:
-                    # เพิ่ม Jitter ก่อนส่งแต่ละข้อความ (1-5 วินาที) เพื่อเลียนแบบพฤติกรรมมนุษย์
-                    jitter = random.uniform(1, 5)
-                    await asyncio.sleep(jitter)
-                    
-                    await client.send_message(gid, text, file=media)
-                    sent_count += 1
-                    print(f"✅ [ID {acc_index+1}] ส่งสำเร็จ: {gid}")
-                
+                    print(f"    [{client_idx+1}/{len(clients)}] กำลังส่งไปยังกลุ่ม {group_id} (Progress: {i+1}/{len(my_groups)}) ...")
+                    await client.send_message(group_id, message_to_send.message, file=media_to_send)
+                    print(f"    ✅ ส่งไปยังกลุ่ม {group_id} สำเร็จ")
+                    # เพิ่ม Jitter เพื่อเลี่ยงการถูกแบน
+                    jitter_time = random.uniform(5, 15) # สุ่มหน่วงเวลา 5-15 วินาที
+                    await asyncio.sleep(jitter_time)
                 except FloodWaitError as e:
-                    print(f"⚠️ [ID {acc_index+1}] FloodWait: ต้องรอ {e.seconds} วินาที...")
+                    print(f"    ⚠️ [ID {client_idx+1}] FloodWait: ต้องรอ {e.seconds} วินาที...")
                     await asyncio.sleep(e.seconds)
                     # พยายามส่งใหม่อีกครั้งหลังจากรอ
                     try:
-                        await client.send_message(gid, text, file=media)
-                        sent_count += 1
+                        await client.send_message(group_id, message_to_send.message, file=media_to_send)
+                        print(f"    ✅ ส่งไปยังกลุ่ม {group_id} สำเร็จ (หลัง FloodWait)")
                     except Exception as e_retry:
-                        print(f"❌ [ID {acc_index+1}] ส่งซ้ำไม่สำเร็จ: {e_retry}")
-                
+                        print(f"    ❌ [ID {client_idx+1}] ส่งซ้ำไม่สำเร็จหลัง FloodWait: {e_retry}")
                 except PeerFloodError:
-                    print(f"⚠️ [ID {acc_index+1}] PeerFlood: บัญชีเริ่มถูกจำกัดการส่งข้อความ (Spam detected)")
+                    print(f"    ⚠️ [ID {client_idx+1}] PeerFlood: บัญชีเริ่มถูกจำกัดการส่งข้อความ (Spam detected) ข้ามกลุ่มนี้")
                     # พักนานขึ้นเมื่อเจอ PeerFlood
                     await asyncio.sleep(random.randint(60, 120))
-                
                 except Exception as e:
-                    print(f"❗ [ID {acc_index+1}] เกิดข้อผิดพลาดกับกลุ่ม {gid}: {e}")
+                    print(f"    ❌ เกิดข้อผิดพลาดในการส่งไปยังกลุ่ม {group_id}: {e}")
+                    # หากส่งไม่ได้ ให้ข้ามไปกลุ่มถัดไป
+                    await asyncio.sleep(random.uniform(2, 5)) # หน่วงเวลาสั้นๆ ก่อนไปกลุ่มถัดไป
 
-            print(f"📊 Progress: [{sent_count}/{total_groups}] เรียบร้อย")
+        except Exception as e:
+            print(f"❌ บัญชีที่ {client_idx+1} (API ID: {api_id}): เกิดข้อผิดพลาดหลักในการดำเนินการ: {e}")
+        finally:
+            if client.is_connected():
+                await client.disconnect()
+                print(f"🔌 บัญชีที่ {client_idx+1} (API ID: {api_id}) ตัดการเชื่อมต่อแล้ว")
 
-            # พักระหว่างก้อน (20-50 วินาที) - ปรับเป็น 30-60 วินาทีเพื่อความปลอดภัย
-            if idx < len(chunks) - 1:
-                pause = random.randint(30, 60)
-                print(f"⏳ [ID {acc_index+1}] พักหายใจ {pause} วินาที...")
-                await asyncio.sleep(pause)
-
-        print(f"✅ [ID {acc_index+1}] จบภารกิจครบ {total_groups} กลุ่ม!")
-
-    except AuthKeyDuplicatedError:
-        print(f"❌ [ID {acc_index+1}] AuthKeyDuplicatedError: Session นี้อาจถูกใช้งานที่อื่น หรือหมดอายุแล้ว")
-    except Exception as e:
-        print(f"❗ [ID {acc_index+1}] พังกลางคัน: {e}")
-    finally:
-        # ตัดการเชื่อมต่อเพื่อให้ Account ขึ้น Offline ในระบบ Telegram
-        if client.is_connected():
-            await client.disconnect()
-
-async def main():
-    # โหลดบัญชีทั้งหมดจาก Environment Variables
-    all_accounts = []
-    for i in range(1, acc_count + 1):
-        s = os.getenv(f'TG_SESSION_{i}')
-        api_id = os.getenv(f'TG_API_ID_{i}')
-        api_hash = os.getenv(f'TG_API_HASH_{i}')
-        m = os.getenv(f'TG_MSG_ID_{i}')
-
-        if s and api_id and api_hash and m:
-            all_accounts.append({
-                'session': s,
-                'api_id': int(api_id),
-                'api_hash': api_hash,
-                'msg_id': int(m)
-            })
-        else:
-            print(f"⚠️ ข้อมูลบัญชี TG_SESSION_{i}, TG_API_ID_{i}, TG_API_HASH_{i}, TG_MSG_ID_{i} ไม่ครบถ้วน จะข้ามบัญชีนี้")
-
-    if not all_accounts:
-        print("❌ ไม่พบข้อมูลบัญชีที่ถูกต้อง กรุณาตั้งค่า Variables ใน Railway ให้ถูกต้อง")
-        return
-    
-    if not target_groups:
-        print("❌ ไม่พบกลุ่มเป้าหมายใน target_groups.json ไม่สามารถดำเนินการต่อได้")
-        return
-
-    print(f"⚙️ ระบบพร้อมทำงาน: ตรวจพบ {len(all_accounts)} บัญชี และ {len(target_groups)} กลุ่มเป้าหมาย")
-
-    while True:
-        for idx, acc in enumerate(all_accounts):
-            # 1. ให้บัญชีปัจจุบันทำงานจนจบลิสต์
-            await work_session(acc, idx)
-            
-            # 2. Logic การพัก (Adaptive Rest)
-            if len(all_accounts) == 1:
-                # กรณี 1 บัญชี: สุ่มพักนาน 15-25 นาที (ถนอมไอดี)
-                wait_next = random.randint(900, 1500)
-                print(f"😴 [Single Mode] พักผ่อนสุ่ม {wait_next // 60} นาที เพื่อความเนียน...")
-            else:
-                # กรณีหลายบัญชี: พัก 10 นาทีตายตัว แล้วส่งต่อคนถัดไป
-                wait_next = 600
-                print(f"😴 [Multi Mode] พัก 10 นาที ก่อนส่งต่อให้ ID ถัดไป...")
-            
-            print("="*40)
-            await asyncio.sleep(wait_next)
+    print("🎉 การดำเนินการทั้งหมดเสร็จสิ้น")
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n🛑 หยุดการทำงานโดยผู้ใช้")
+    except Exception as e:
+        print(f"\n❌ เกิดข้อผิดพลาดที่ไม่คาดคิด: {e}")
