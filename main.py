@@ -1,3 +1,4 @@
+
 import os
 import json
 import asyncio
@@ -5,7 +6,7 @@ import random
 import time
 from telethon.sync import TelegramClient
 from telethon.sessions import StringSession
-from telethon.tl.functions.messages import GetHistoryRequest
+from telethon.tl.functions.messages import GetHistoryRequest # ยังคง import ไว้เผื่อใช้ในอนาคต แต่ไม่ได้ใช้ในส่วนนี้แล้ว
 from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
 from telethon.errors import FloodWaitError, AuthKeyDuplicatedError, PeerFloodError
 
@@ -68,9 +69,6 @@ async def main():
             await client.connect()
             if not await client.is_user_authorized():
                 print(f"⚠️ บัญชีที่ {i} (API ID: {api_id}) ไม่ได้เข้าสู่ระบบ หรือ Session หมดอายุ")
-                # ในกรณีที่ session หมดอายุ ควรให้ผู้ใช้สร้าง session ใหม่
-                # หรืออาจจะเพิ่ม logic ให้ client.start() เพื่อเข้าสู่ระบบใหม่
-                # แต่สำหรับการรันบน Railway แนะนำให้สร้าง StringSession ใหม่
                 await client.disconnect()
                 continue
             clients.append({'client': client, 'msg_id': msg_id, 'api_id': api_id})
@@ -106,31 +104,20 @@ async def main():
         print(f"➡️ บัญชีที่ {client_idx+1} (API ID: {api_id}) กำลังจะส่งไปยัง {len(my_groups)} กลุ่ม")
 
         try:
-            # ดึงข้อความจาก Saved Messages
-            entity = await client.get_entity('me') # 'me' คือ Saved Messages
-            history = await client(GetHistoryRequest(peer=entity, limit=1, offset_id=msg_id))
-            message_to_send = None
+            # ดึงข้อความจาก Saved Messages ('me') โดยระบุ ID โดยตรง
+            # วิธีนี้เสถียรและไม่ต้องใช้ GetHistoryRequest ที่ซับซ้อน
+            messages = await client.get_messages('me', ids=msg_id)
+            message_to_send = messages # get_messages เมื่อระบุ ids จะคืนค่าเป็น message object โดยตรง
 
-            if history.messages:
-                # ค้นหาข้อความที่ตรงกับ msg_id
-                for msg in history.messages:
-                    if msg.id == msg_id:
-                        message_to_send = msg
-                        break
-            
             if not message_to_send:
                 print(f"❌ บัญชีที่ {client_idx+1} (API ID: {api_id}): ไม่พบข้อความ ID {msg_id} ใน Saved Messages")
                 await client.disconnect()
                 continue
 
+            print(f"✅ พบข้อความต้นฉบับแล้ว: {message_to_send.message[:30]}...")
+
             # เตรียม Media (ถ้ามี)
-            media_to_send = None
-            if message_to_send.media:
-                if isinstance(message_to_send.media, MessageMediaPhoto):
-                    media_to_send = message_to_send.media.photo
-                elif isinstance(message_to_send.media, MessageMediaDocument):
-                    media_to_send = message_to_send.media.document
-                # สามารถเพิ่มประเภท Media อื่นๆ ได้ตามต้องการ
+            media_to_send = message_to_send.media
 
             # ส่งข้อความไปยังแต่ละกลุ่ม
             for i, group_id in enumerate(my_groups):
